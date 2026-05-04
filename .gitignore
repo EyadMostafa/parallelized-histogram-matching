@@ -1,0 +1,9 @@
+msmpi_sdk/
+opencv_dir/
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+build/
+.history/
+*.exe
