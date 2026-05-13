@@ -1,15 +1,17 @@
 #include "histogram_matcher.h"
 #include <omp.h>
 
+// NOTE: We always iterate image.rows (not isContinuous() flattening trick).
+// When outer_loop=1 (continuous), #pragma omp for has 1 iteration → only 1
+// thread runs → parallelism is completely defeated. Row-based iteration gives
+// OpenMP enough chunks to distribute across all threads.
+
 void HistogramMatcher::computeCDF(const cv::Mat& image, float cdf_B[256], float cdf_G[256], float cdf_R[256]) {
     long long hist_B[256] = {0};
     long long hist_G[256] = {0};
     long long hist_R[256] = {0};
 
     int total_pixels = image.rows * image.cols;
-    bool continuous = image.isContinuous();
-    int outer_loop = continuous ? 1 : image.rows;
-    int inner_loop = continuous ? total_pixels : image.cols;
 
     #pragma omp parallel
     {
@@ -18,9 +20,9 @@ void HistogramMatcher::computeCDF(const cv::Mat& image, float cdf_B[256], float 
         long long local_hist_R[256] = {0};
 
         #pragma omp for schedule(guided)
-        for (int i = 0; i < outer_loop; ++i) {
+        for (int i = 0; i < image.rows; ++i) {
             const cv::Vec3b* row_ptr = image.ptr<cv::Vec3b>(i);
-            for (int j = 0; j < inner_loop; ++j) {
+            for (int j = 0; j < image.cols; ++j) {
                 cv::Vec3b pixel = row_ptr[j];
                 local_hist_B[pixel[0]]++;
                 local_hist_G[pixel[1]]++;
@@ -38,7 +40,7 @@ void HistogramMatcher::computeCDF(const cv::Mat& image, float cdf_B[256], float 
         }
     }
 
-    // Convert histogram to CDF (sequential)
+    // CDF accumulation is O(256) — serial is fine
     long long cum_B = 0, cum_G = 0, cum_R = 0;
     for (int i = 0; i < 256; ++i) {
         cum_B += hist_B[i];
@@ -66,15 +68,11 @@ void HistogramMatcher::generateLUTs(const float src_cdf_B[256], const float src_
 }
 
 void HistogramMatcher::applyLUT(cv::Mat& frame, const uchar lut_B[256], const uchar lut_G[256], const uchar lut_R[256]) {
-    bool continuous = frame.isContinuous();
-    int outer_loop = continuous ? 1 : frame.rows;
-    int inner_loop = continuous ? frame.rows * frame.cols : frame.cols;
-
-    // Embarrassingly parallel LUT application
+    // Same fix: iterate over frame.rows so #pragma omp for distributes work
     #pragma omp parallel for schedule(guided)
-    for (int i = 0; i < outer_loop; ++i) {
+    for (int i = 0; i < frame.rows; ++i) {
         cv::Vec3b* row_ptr = frame.ptr<cv::Vec3b>(i);
-        for (int j = 0; j < inner_loop; ++j) {
+        for (int j = 0; j < frame.cols; ++j) {
             cv::Vec3b& pixel = row_ptr[j];
             pixel[0] = lut_B[pixel[0]];
             pixel[1] = lut_G[pixel[1]];
